@@ -115,7 +115,7 @@ def wrap_text_to_fit(draw, text, font_path, max_width, initial_size=42, min_size
         str(font_path), min_size) if font_path else ImageFont.load_default()
     return wrap_text(text, font, max_width), font
 
-def create_batch_grid(images, width=832, height=1216, padding=10, margin_top=6, margin_side=10, bg_color=(255, 255, 255)):
+def create_batch_grid(images, width=832, height=1216, padding=10, bg_color=(255, 255, 255)):
     if not images:
         return Image.new("RGB", (width, height), bg_color)
 
@@ -128,15 +128,15 @@ def create_batch_grid(images, width=832, height=1216, padding=10, margin_top=6, 
     grid_w = cols * cell_w + (cols - 1) * padding
     grid_h = rows * cell_h + (rows - 1) * padding
 
-    total_w = grid_w + 2 * margin_side
-    total_h = grid_h + 2 * margin_top
+    total_w = grid_w + 2 * padding
+    total_h = grid_h + 2 * padding
 
     grid = Image.new("RGB", (total_w, total_h), bg_color)
 
     for i, img in enumerate(images):
         r, c = divmod(i, cols)
-        x = margin_side + c * (cell_w + padding)
-        y = margin_top + r * (cell_h + padding)
+        x = padding + c * (cell_w + padding)
+        y = padding + r * (cell_h + padding)
         grid.paste(img, (x, y))
 
     return grid
@@ -342,9 +342,12 @@ class Script(scripts.Script):
                 img = generate_or_warn(
                     p, sampler=sampler, scheduler=scheduler, font_path=font_path)
 
-                img_annotated = annotate_batch_image(
-                    img, sampler, scheduler, font_path)
-                result_images.append(img_annotated)
+                if show_labels:
+                    img_annotated = annotate_batch_image(
+                        img, sampler, scheduler, font_path)
+                    result_images.append(img_annotated)
+                else:
+                    result_images.append(img)
 
                 if save_cells:
                     filename = f"{sampler}__{scheduler}.png"
@@ -352,7 +355,7 @@ class Script(scripts.Script):
                     logger.info(f"💾 Saved: {filename}")
 
             grid = create_batch_grid(result_images, width=p.width, height=p.height,
-                                    padding=padding, margin_top=6, margin_side=padding)
+                                    padding=padding, bg_color=(255, 255, 255))
 
             grid_idx = get_next_grid_index()
             
