@@ -393,9 +393,7 @@ class Script(scripts.Script):
         if not y_vals:
             logger.warning("⚠️ No Scheduler(s) selected for Axis X or Y.")
             return safe_processed(p, [], sd, sd, 0.0, pos_prompt, neg_prompt, "⚠️ No Scheduler(s) selected", "")
-        if len(x_vals) * len(y_vals) > 50:
-            return safe_processed(p, [], sd, sd, 0.0, pos_prompt, neg_prompt, "⚠️ Invalid or large grid", "")
-
+            
         cells = []
         total = len(x_vals) * len(y_vals)
         i = 1
