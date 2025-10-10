@@ -4,9 +4,8 @@ import modules.scripts as scripts
 from modules.sd_samplers import samplers
 from modules.sd_schedulers import schedulers
 from modules.processing import process_images, Processed
-from modules.sd_samplers import samplers
-from modules.sd_schedulers import schedulers
 from modules import shared
+from modules.shared import state
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import random
@@ -14,24 +13,33 @@ import logging
 import sys
 import time
 import re
+import gc
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(scripts.basedir())
-OUTPUT_ROOT = BASE_DIR / "outputs" / "🔬 Sampler × Scheduler Grid (Forge)"
+OUTPUT_ROOT = BASE_DIR / "outputs" / "sampler_scheduler_grid_forge"
 output_dir = OUTPUT_ROOT
 output_dir.mkdir(parents=True, exist_ok=True)
 cells_dir = output_dir / "cells"
 cells_dir.mkdir(exist_ok=True)
 
+
+def sanitize_filename(s):
+    return re.sub(r'[<>:"/\\|?*\n\r]+', '_', s).strip()[:200]
+
+
 def get_next_grid_index():
-    timestamp = int(time.time())
+    timestamp = int(time.time() * 1000)
     pattern = re.compile(rf"^.*_{timestamp}_(\d+)\.(?:png|webp)$")
-    existing = [f for f in output_dir.iterdir() if f.is_file() and pattern.match(f.name)]
-    indices = [int(pattern.match(f.name).group(1)) for f in existing if pattern.match(f.name)]
+    existing = [f for f in output_dir.iterdir() if f.is_file()
+                and pattern.match(f.name)]
+    indices = [int(pattern.match(f.name).group(1))
+               for f in existing if pattern.match(f.name)]
     next_idx = max(indices, default=0) + 1
     return f"{timestamp}_{next_idx:03d}"
+
 
 def generate_or_warn(p, sampler, scheduler, font_path):
     try:
@@ -50,6 +58,7 @@ def generate_or_warn(p, sampler, scheduler, font_path):
 
     return img
 
+
 def apply_params(p, sampler_label, scheduler_label):
     sampler_label = sampler_label.strip()
     sampler_index = next((i for i, s in enumerate(
@@ -59,34 +68,42 @@ def apply_params(p, sampler_label, scheduler_label):
 
     p.sampler_index = sampler_index
     p.sampler_name = samplers[sampler_index].name
-
     p.scheduler = scheduler_label.strip()
 
     logger.info(
         f"🧪 Applied Sampler = '{sampler_label}' → index {sampler_index}")
     logger.info(f"🧪 Applied Scheduler = '{scheduler_label.strip()}'")
 
+
 def create_fallback_image(width, height, sampler, scheduler, font_path):
     img = Image.new("RGB", (width, height), (255, 230, 230))
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(
         str(font_path), 38) if font_path else ImageFont.load_default()
+
     msg = f"⚠️ Pair failed\n{sampler} × {scheduler}"
     lines = msg.split("\n")
-    total_h = len(lines) * sum(font.getmetrics())
+
+    ascent, descent = font.getmetrics()
+    line_h = ascent + descent
+    total_h = len(lines) * line_h
     y = (height - total_h) // 2
+
     for line in lines:
         text_w = font.getbbox(line)[2]
         x = (width - text_w) // 2
         draw.text((x, y), line, font=font, fill=(150, 0, 0))
-        y += sum(font.getmetrics())
+        y += line_h
+
     return img
+
 
 def safe_processed(*args):
     processed = Processed(*args)
     processed.info = str(processed.info or "")
     processed.comments = str(processed.comments or "")
     return processed
+
 
 def wrap_text(text, font, max_width):
     words = text.split()
@@ -104,16 +121,18 @@ def wrap_text(text, font, max_width):
         lines.append(cur)
     return lines
 
+
 def wrap_text_to_fit(draw, text, font_path, max_width, initial_size=42, min_size=18):
     for size in range(initial_size, min_size - 1, -1):
         font = ImageFont.truetype(
             str(font_path), size) if font_path else ImageFont.load_default()
         lines = wrap_text(text, font, max_width)
-        if all(font.getbbox(line)[2] <= max_width - 10 for line in lines):
+        if all(font.getbbox(line)[2] <= max_width * 0.98 for line in lines) and len(lines) <= 3:
             return lines, font
     font = ImageFont.truetype(
         str(font_path), min_size) if font_path else ImageFont.load_default()
     return wrap_text(text, font, max_width), font
+
 
 def create_batch_grid(images, width=832, height=1216, padding=10, bg_color=(255, 255, 255)):
     if not images:
@@ -141,6 +160,7 @@ def create_batch_grid(images, width=832, height=1216, padding=10, bg_color=(255,
 
     return grid
 
+
 def annotate_batch_image(img, sampler, scheduler, font_path=None):
     label_text = f"{sampler.strip()} × {scheduler.strip()}"
     dummy_draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
@@ -162,8 +182,6 @@ def annotate_batch_image(img, sampler, scheduler, font_path=None):
     out.paste(img, (0, top_margin + total_text_h + gap))
 
     draw = ImageDraw.Draw(out)
-    line_h = sum(font.getmetrics())
-    total_text_h = line_h * len(lines)
     y_text = top_margin
 
     for line in lines:
@@ -173,6 +191,7 @@ def annotate_batch_image(img, sampler, scheduler, font_path=None):
         y_text += line_h
 
     return out
+
 
 class Script(scripts.Script):
     def title(self):
@@ -189,7 +208,8 @@ class Script(scripts.Script):
             ["XY Grid", "Batch Grid"], value="XY Grid", label="🏁 Grid Mode")
 
         stop_btn = gr.Button("🛑 Stop Grid Generation")
-        stop_btn.click(fn=lambda: shared.state.interrupt(), inputs=[], outputs=[])
+        stop_btn.click(fn=lambda: shared.state.interrupt(),
+                       inputs=[], outputs=[])
 
         with gr.Row():
             xy_group = gr.Group(visible=True)
@@ -252,7 +272,7 @@ class Script(scripts.Script):
         seed = gr.Textbox(label="🎲 Seed (optional)",
                           placeholder="Leave blank for random")
         steps = gr.Slider(1, 100, value=35, step=1, label="🚀 Steps")
-        cfg_scale = gr.Slider(1.0, 30.0, value=5, 
+        cfg_scale = gr.Slider(1.0, 30.0, value=5,
                               step=1, label="🎯 CFG Scale")
         width = gr.Slider(256, 2048, value=832, step=1, label="↔️ Width")
         height = gr.Slider(256, 2048, value=1216, step=1, label="↕️ Height")
@@ -290,6 +310,10 @@ class Script(scripts.Script):
          width, height, padding,
          save_formats, show_labels, save_cells) = args
 
+        if state.interrupted:
+            logger.warning("🧹 Resetting interrupted state before start")
+            state.interrupted = False
+
         try:
             sd = int(seed.strip()) if seed.strip(
             ) else random.randint(1, 2**32 - 1)
@@ -316,7 +340,7 @@ class Script(scripts.Script):
 
         if mode == "Batch Grid":
             pairs = [line.strip()
-                    for line in pair_list.strip().splitlines() if "," in line]
+                     for line in pair_list.strip().splitlines() if "," in line]
             if not pairs:
                 logger.warning("⚠️ No valid pairs found in 🔗 Added Pairs.")
                 return safe_processed(p, [], sd, sd, 0.0, pos_prompt, neg_prompt, "⚠️ No pairs found", "")
@@ -332,12 +356,21 @@ class Script(scripts.Script):
             result_images = []
 
             for i, line in enumerate(unique_pairs, 1):
-                sampler, scheduler = line.split(",", 1)
-                sampler = sampler.strip()
-                scheduler = scheduler.strip()
+                if state.interrupted:
+                    print("🛑 Interrupted by user.", flush=True)
+                    logger.warning("🛑 Grid generation interrupted by user.")
+                    break
 
+                parts = [part.strip() for part in line.split(",", 1)]
+                if len(parts) != 2:
+                    logger.warning(f"⚠️ Invalid pair format: {line}")
+                    continue
+
+                sampler, scheduler = parts
                 print(
                     f"🔄[{i}/{len(unique_pairs)}] Sampler = '{sampler}', Scheduler = '{scheduler}'", flush=True)
+                logger.info(
+                    f"🔄[{i}/{len(unique_pairs)}] Sampler = '{sampler}', Scheduler = '{scheduler}'")
 
                 img = generate_or_warn(
                     p, sampler=sampler, scheduler=scheduler, font_path=font_path)
@@ -350,18 +383,24 @@ class Script(scripts.Script):
                     result_images.append(img)
 
                 if save_cells:
-                    filename = f"{sampler}__{scheduler}.png"
+                    filename = f"{sanitize_filename(sampler)}__{sanitize_filename(scheduler)}.png"
                     img.save(cells_dir / filename, "PNG")
-                    logger.info(f"💾 Saved: {filename}")
+                    logger.info(f"💾 Batch Cell Saved: {filename}")
+                    try:
+                        img.close()
+                    except Exception:
+                        pass
+                    del img
 
             grid = create_batch_grid(result_images, width=p.width, height=p.height,
-                                    padding=padding, bg_color=(255, 255, 255))
+                                     padding=padding, bg_color=(255, 255, 255))
 
             grid_idx = get_next_grid_index()
-            
+
             for fmt in save_formats:
                 ext = fmt.lower()
                 out = grid
+
                 if out.width > LIMIT or out.height > LIMIT:
                     if auto_downscale:
                         scale = min(LIMIT / out.width, LIMIT / out.height)
@@ -370,14 +409,24 @@ class Script(scripts.Script):
                         logger.warning(
                             f"🪄 Downscaling Batch grid → {out.width}×{out.height}")
                     else:
+                        logger.warning(
+                            "⚠️ Image exceeds global LIMIT and auto_downscale disabled — skipping save")
                         continue
-                out.save(
-                    output_dir / f"batchgrid_{grid_idx}.{ext}", fmt.upper(), quality=100 if ext == "webp" else None)
-                logger.info(f"💾 Batch Grid saved as {fmt.upper()}: {out.width}×{out.height}")
 
-            logger.info(f"✅ Batch Grid assembled: {grid.width}×{grid.height}")
+                save_kwargs = {"quality": 100} if ext == "webp" else {}
+                out.save(
+                    output_dir / f"batchgrid_{grid_idx}.{ext}", fmt.upper(), **save_kwargs)
+                logger.info(
+                    f"💾 Saved batchgrid_{grid_idx}.{ext} ({out.width}×{out.height})")
+                try:
+                    out.close()
+                except Exception:
+                    pass
+
             print(
-                f"✅ Batch Grid assembled: {grid.width}×{grid.height}", flush=True)
+                f"✅ Batch Grid complete: {grid.width}×{grid.height}", flush=True)
+
+            gc.collect()
 
             return safe_processed(p, [grid], sd, sd, 0.0, pos_prompt, neg_prompt, "✅ Batch Grid complete", "")
 
@@ -388,18 +437,23 @@ class Script(scripts.Script):
         y_vals = xy_schedulers if axis_y == "Scheduler" else xy_samplers
 
         if not x_vals:
-            logger.warning("⚠️ No Sampler(s) selected for Axis X or Y.")
+            print("⚠️ No Sampler(s) selected for Axis X or Y.")
             return safe_processed(p, [], sd, sd, 0.0, pos_prompt, neg_prompt, "⚠️ No Sampler(s) selected", "")
         if not y_vals:
-            logger.warning("⚠️ No Scheduler(s) selected for Axis X or Y.")
+            print("⚠️ No Scheduler(s) selected for Axis X or Y.")
             return safe_processed(p, [], sd, sd, 0.0, pos_prompt, neg_prompt, "⚠️ No Scheduler(s) selected", "")
-            
+
         cells = []
         total = len(x_vals) * len(y_vals)
         i = 1
 
         for yv in y_vals:
             for xv in x_vals:
+                if state.interrupted:
+                    print("🛑 Interrupted by user.", flush=True)
+                    logger.warning("🛑 Grid generation interrupted by user.")
+                    break
+
                 samp = xv if axis_x == "Sampler" else yv
                 sched = yv if axis_y == "Scheduler" else xv
 
@@ -410,9 +464,10 @@ class Script(scripts.Script):
 
                 img = generate_or_warn(
                     p, sampler=samp, scheduler=sched, font_path=font_path)
-
                 cells.append(img)
                 i += 1
+            if state.interrupted:
+                break
 
         font_test = ImageFont.truetype(
             str(font_path), 42) if font_path else ImageFont.load_default()
@@ -426,9 +481,10 @@ class Script(scripts.Script):
             max_label_lines = max(len(wrap_text_to_fit(
                 dummy_draw, label, font_path, p.width)[0]) for label in x_vals)
             x_label_h = 10 + line_h * max_label_lines + 6
-            
+
             max_y_label = max(y_vals, key=len) if y_vals else ""
-            lines, font = wrap_text_to_fit(dummy_draw, max_y_label, font_path, p.height)
+            lines, font = wrap_text_to_fit(
+                dummy_draw, max_y_label, font_path, p.height)
             text_height = sum(font.getmetrics()) * len(lines)
             y_label_w = text_height + 40
         else:
@@ -455,51 +511,64 @@ class Script(scripts.Script):
                     text_w = font.getbbox(line)[2]
                     x_text = x + (box_w - text_w) // 2
                     draw.text((x_text, y_text), line,
-                            font=font, fill=(0, 0, 0))
+                              font=font, fill=(0, 0, 0))
                     y_text += line_h
 
             for iy, label in enumerate(y_vals):
                 y = x_label_h + padding + iy * (p.height + padding)
-                
+
                 dummy_draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-                lines, font = wrap_text_to_fit(dummy_draw, label, font_path, p.width)
-                
+                lines, font = wrap_text_to_fit(
+                    dummy_draw, label, font_path, p.width)
+
                 line_h = sum(font.getmetrics())
                 total_text_h = line_h * len(lines)
 
                 x_text = y_label_w - 10 + padding
                 y_text = y + (p.height // 2)
-                
+
                 current_y = y_text - (total_text_h // 2)
-                
+
                 for line in lines:
                     text_w = font.getbbox(line)[2]
-                    rotated_text = Image.new("RGBA", (text_w, line_h), (255, 255, 255, 0))
+                    rotated_text = Image.new(
+                        "RGBA", (text_w, line_h), (255, 255, 255, 0))
                     rotated_draw = ImageDraw.Draw(rotated_text)
-                    rotated_draw.text((0, 0), line, font=font, fill=(0, 0, 0, 255))
-                    rotated_text = rotated_text.rotate(90, expand=True, fillcolor=(255, 255, 255, 0))
-                    
+                    rotated_draw.text((0, 0), line, font=font,
+                                      fill=(0, 0, 0, 255))
+                    rotated_text = rotated_text.rotate(
+                        90, expand=True, fillcolor=(255, 255, 255, 0))
+
                     text_x = y_label_w - rotated_text.width - 10 + padding
-                    text_y = current_y + (line_h // 2) - (rotated_text.height // 2)
+                    text_y = current_y + (line_h // 2) - \
+                        (rotated_text.height // 2)
                     grid.paste(rotated_text, (text_x, text_y), rotated_text)
-                    
+
                     current_y += line_h
 
         for idx, img in enumerate(cells):
             r, c = divmod(idx, cols)
-            x = (y_label_w if show_labels else 0) + padding + c * (p.width + padding)
-            y = (x_label_h if show_labels else 0) + padding + r * (p.height + padding)
+            x = (y_label_w if show_labels else 0) + \
+                padding + c * (p.width + padding)
+            y = (x_label_h if show_labels else 0) + \
+                padding + r * (p.height + padding)
             grid.paste(img, (x, y))
 
             if save_cells:
-                filename = f"{x_vals[c]}__{y_vals[r]}.png"
+                filename = f"{sanitize_filename(x_vals[c])}__{sanitize_filename(y_vals[r])}.png"
                 img.save(cells_dir / filename, "PNG")
                 logger.info(f"💾 XY Cell saved: {filename}")
+                try:
+                    img.close()
+                except Exception:
+                    pass
+                del img
 
         grid_idx = get_next_grid_index()
         for fmt in save_formats:
             ext = fmt.lower()
             out = grid
+
             if out.width > LIMIT or out.height > LIMIT:
                 if auto_downscale:
                     scale = min(LIMIT / out.width, LIMIT / out.height)
@@ -508,11 +577,22 @@ class Script(scripts.Script):
                     logger.warning(
                         f"🪄 Downscaling XY grid → {out.width}×{out.height}")
                 else:
+                    logger.warning(
+                        "⚠️ Image exceeds global LIMIT and auto_downscale disabled — skipping save")
                     continue
-            out.save(
-                output_dir / f"xygrid_{grid_idx}.{ext}", fmt.upper(), quality=100 if ext == "webp" else None)
 
-        logger.info(f"✅ XY Grid saved: {grid.width}×{grid.height}")
-        print(f"✅ XY Grid saved: {grid.width}×{grid.height}", flush=True)
+            save_kwargs = {"quality": 100} if ext == "webp" else {}
+            out.save(output_dir /
+                     f"xygrid_{grid_idx}.{ext}", fmt.upper(), **save_kwargs)
+            logger.info(
+                f"💾 Saved xygrid_{grid_idx}.{ext} ({out.width}×{out.height})")
+            try:
+                out.close()
+            except Exception:
+                pass
+
+        print(f"✅ XY Grid complete: {grid.width}×{grid.height}", flush=True)
+
+        gc.collect()
 
         return safe_processed(p, [grid], sd, sd, 0.0, pos_prompt, neg_prompt, "✅ XY Grid complete", "")
