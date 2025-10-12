@@ -25,12 +25,17 @@ output_dir.mkdir(parents=True, exist_ok=True)
 cells_dir = output_dir / "cells"
 cells_dir.mkdir(exist_ok=True)
 
+LIMIT = 16383
+label_gap = 6
+auto_downscale = True
+
 
 def sanitize_filename(s):
     return re.sub(r'[<>:"/\\|?*\n\r]+', '_', s).strip()[:200]
 
 
 def get_next_grid_index():
+    output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = int(time.time() * 1000)
     pattern = re.compile(rf"^.*_{timestamp}_(\d+)\.(?:png|webp)$")
     existing = [f for f in output_dir.iterdir() if f.is_file()
@@ -171,11 +176,10 @@ def annotate_batch_image(img, sampler, scheduler, font_path=None):
     line_h = ascent + descent
     total_text_h = line_h * len(lines)
 
-    top_margin = 10
-    gap = 6
-    bottom_margin = descent + 6
+    top_margin = label_gap
+    gap = label_gap
 
-    final_h = top_margin + total_text_h + gap + img.height + bottom_margin
+    final_h = top_margin + total_text_h + gap + img.height + label_gap
     final_w = img.width
 
     out = Image.new("RGB", (final_w, final_h), (255, 255, 255))
@@ -204,93 +208,70 @@ class Script(scripts.Script):
         sampler_list = [s.name for s in samplers if hasattr(s, "name")]
         scheduler_list = [s.label for s in schedulers if hasattr(s, "label")]
 
-        mode_selector = gr.Radio(
-            ["XY Grid", "Batch Grid"], value="XY Grid", label="🏁 Grid Mode")
+        mode_selector = gr.Radio(["XY Grid", "Batch Grid"], value="XY Grid", label="🏁 Grid Mode")
 
         stop_btn = gr.Button("🛑 Stop Grid Generation")
-        stop_btn.click(fn=lambda: shared.state.interrupt(),
-                       inputs=[], outputs=[])
+        stop_btn.click(fn=lambda: shared.state.interrupt(), inputs=[], outputs=[])
 
-        with gr.Row():
-            xy_group = gr.Group(visible=True)
-            with xy_group:
-                with gr.Row():
-                    xy_samplers = gr.Dropdown(
-                        choices=sampler_list, multiselect=True, label="🗳️ Sampler(s)")
-                    xy_schedulers = gr.Dropdown(
-                        choices=scheduler_list, multiselect=True, label="📆 Scheduler(s)")
-                sampler_axis = gr.Radio(
-                    ["Axis X", "Axis Y"], value="Axis X", label="🧭 Place Sampler on")
+        # XY Grid block
+        xy_group = gr.Group(visible=True)
+        with xy_group:
+            with gr.Row():
+                with gr.Column():
+                    xy_samplers = gr.Dropdown(choices=sampler_list, multiselect=True, label="🗳️ Sampler(s)")
+                    select_all_samplers_btn = gr.Button("✅ Select All")
+                    clear_all_samplers_btn = gr.Button("🧹 Clear All")
+                with gr.Column():
+                    xy_schedulers = gr.Dropdown(choices=scheduler_list, multiselect=True, label="📆 Scheduler(s)")
+                    select_all_schedulers_btn = gr.Button("✅ Select All")
+                    clear_all_schedulers_btn = gr.Button("🧹 Clear All")
+            sampler_axis = gr.Radio(["Axis X", "Axis Y"], value="Axis X", label="🧭 Place Sampler on")
 
+        # Button logic
+        select_all_samplers_btn.click(lambda: gr.update(value=sampler_list), inputs=[], outputs=[xy_samplers])
+        clear_all_samplers_btn.click(lambda: gr.update(value=[]), inputs=[], outputs=[xy_samplers])
+        select_all_schedulers_btn.click(lambda: gr.update(value=scheduler_list), inputs=[], outputs=[xy_schedulers])
+        clear_all_schedulers_btn.click(lambda: gr.update(value=[]), inputs=[], outputs=[xy_schedulers])
+
+        # Batch Grid block
         batch_group = gr.Group(visible=False)
         with batch_group:
             with gr.Row():
-                dropdown_sampler = gr.Dropdown(
-                    choices=sampler_list, label="🗳️ Select Sampler")
-                dropdown_scheduler = gr.Dropdown(
-                    choices=scheduler_list, label="📆 Select Scheduler")
+                dropdown_sampler = gr.Dropdown(choices=sampler_list, label="🗳️ Sampler(s)")
+                dropdown_scheduler = gr.Dropdown(choices=scheduler_list, label="📆 Scheduler(s)")
             add_pair_btn = gr.Button("➕ Add Pair")
             clear_pairs_btn = gr.Button("🧹 Clear All Pairs")
-            pair_list = gr.Textbox(
-                label="🔗 Added Pairs", placeholder="Sampler, Scheduler per line", lines=6)
+            pair_list = gr.Textbox(label="🔗 Added Pairs", placeholder="Sampler, Scheduler per line", lines=6)
             pair_count = gr.Textbox(label="🧮 Total Pairs", interactive=False)
             pair_state = gr.State([])
 
             def parse_pairs(txt):
-                lines = [line.strip()
-                         for line in txt.splitlines() if "," in line]
+                lines = [line.strip() for line in txt.splitlines() if "," in line]
                 return list(dict.fromkeys(lines))
 
-            pair_list.change(
-                lambda txt: (
-                    parse_pairs(txt),
-                    str(len(parse_pairs(txt)))
-                ),
-                inputs=[pair_list],
-                outputs=[pair_state, pair_count]
-            )
-
-            add_pair_btn.click(
-                lambda s, sch, cur: cur +
-                [f"{s},{sch}"] if s and sch and f"{s},{sch}" not in cur else cur,
-                inputs=[dropdown_sampler, dropdown_scheduler, pair_state],
-                outputs=[pair_state]
-            )
-
-            pair_state.change(
-                lambda st: ("\n".join(st), str(len(st))),
-                inputs=[pair_state],
-                outputs=[pair_list, pair_count]
-            )
-
+            pair_list.change(lambda txt: (parse_pairs(txt), str(len(parse_pairs(txt)))), inputs=[pair_list], outputs=[pair_state, pair_count])
+            add_pair_btn.click(lambda s, sch, cur: cur + [f"{s},{sch}"] if s and sch and f"{s},{sch}" not in cur else cur,
+                            inputs=[dropdown_sampler, dropdown_scheduler, pair_state], outputs=[pair_state])
+            pair_state.change(lambda st: ("\n".join(st), str(len(st))), inputs=[pair_state], outputs=[pair_list, pair_count])
             clear_pairs_btn.click(lambda: [], [], [pair_state])
 
-        pos_prompt = gr.Textbox(label="✅ Positive Prompt",
-                                placeholder="What to include", lines=3)
-        neg_prompt = gr.Textbox(label="⛔ Negative Prompt",
-                                placeholder="What to avoid", lines=2)
-        seed = gr.Textbox(label="🎲 Seed (optional)",
-                          placeholder="Leave blank for random")
+        # Prompt and settings
+        pos_prompt = gr.Textbox(label="✅ Positive Prompt", placeholder="What to include", lines=3)
+        neg_prompt = gr.Textbox(label="⛔ Negative Prompt", placeholder="What to avoid", lines=2)
+        seed = gr.Textbox(label="🎲 Seed (optional)", placeholder="Leave blank for random")
         steps = gr.Slider(1, 100, value=35, step=1, label="🚀 Steps")
-        cfg_scale = gr.Slider(1.0, 30.0, value=5,
-                              step=1, label="🎯 CFG Scale")
+        cfg_scale = gr.Slider(1.0, 30.0, value=5, step=1, label="🎯 CFG Scale")
         width = gr.Slider(256, 2048, value=832, step=1, label="↔️ Width")
         height = gr.Slider(256, 2048, value=1216, step=1, label="↕️ Height")
         padding = gr.Slider(0, 200, value=20, step=1, label="📏 Padding (px)")
-        save_formats = gr.CheckboxGroup(choices=["WEBP", "PNG"], value=[
-                                        "WEBP"], label="💾 Save As")
+        save_formats = gr.CheckboxGroup(choices=["WEBP", "PNG"], value=["WEBP"], label="💾 Save As")
         show_labels = gr.Checkbox(label="📝 Add Labels", value=True)
-        save_cells = gr.Checkbox(
-            label="💾 Save each cell individually", value=False)
+        save_cells = gr.Checkbox(label="💾 Save each cell individually", value=False)
 
-        mode_selector.change(
-            lambda m: {
-                xy_group: gr.update(visible=m == "XY Grid"),
-                batch_group: gr.update(visible=m == "Batch Grid")
-            },
-            inputs=[mode_selector],
-            outputs=[xy_group, batch_group]
-        )
+        mode_selector.change(lambda m: {
+            xy_group: gr.update(visible=m == "XY Grid"),
+            batch_group: gr.update(visible=m == "Batch Grid")
+        }, inputs=[mode_selector], outputs=[xy_group, batch_group])
 
         return [
             mode_selector,
@@ -301,6 +282,7 @@ class Script(scripts.Script):
             width, height, padding,
             save_formats, show_labels, save_cells
         ]
+
 
     def run(self, p, *args):
         (mode, xy_samplers, xy_schedulers, sampler_axis,
@@ -334,9 +316,6 @@ class Script(scripts.Script):
         if not font_path.exists():
             logger.warning("⚠️ Font not found — using default")
             font_path = None
-
-        LIMIT = 16383
-        auto_downscale = True
 
         if mode == "Batch Grid":
             pairs = [line.strip()
@@ -384,13 +363,9 @@ class Script(scripts.Script):
 
                 if save_cells:
                     filename = f"{sanitize_filename(sampler)}__{sanitize_filename(scheduler)}.png"
+                    # Save the original img (without annotation), to keep cell contents consistent
                     img.save(cells_dir / filename, "PNG")
                     logger.info(f"💾 Batch Cell Saved: {filename}")
-                    try:
-                        img.close()
-                    except Exception:
-                        pass
-                    del img
 
             grid = create_batch_grid(result_images, width=p.width, height=p.height,
                                      padding=padding, bg_color=(255, 255, 255))
@@ -418,10 +393,12 @@ class Script(scripts.Script):
                     output_dir / f"batchgrid_{grid_idx}.{ext}", fmt.upper(), **save_kwargs)
                 logger.info(
                     f"💾 Saved batchgrid_{grid_idx}.{ext} ({out.width}×{out.height})")
-                try:
-                    out.close()
-                except Exception:
-                    pass
+
+                if out is not grid:
+                    try:
+                        out.close()
+                    except Exception:
+                        pass
 
             print(
                 f"✅ Batch Grid complete: {grid.width}×{grid.height}", flush=True)
@@ -480,13 +457,14 @@ class Script(scripts.Script):
         if show_labels:
             max_label_lines = max(len(wrap_text_to_fit(
                 dummy_draw, label, font_path, p.width)[0]) for label in x_vals)
-            x_label_h = 10 + line_h * max_label_lines + 6
+            x_label_h = line_h * max_label_lines + 2 * label_gap
 
             max_y_label = max(y_vals, key=len) if y_vals else ""
             lines, font = wrap_text_to_fit(
                 dummy_draw, max_y_label, font_path, p.height)
             text_height = sum(font.getmetrics()) * len(lines)
-            y_label_w = text_height + 40
+            y_label_w = text_height + 2 * label_gap
+
         else:
             x_label_h = 0
             y_label_w = 0
@@ -558,13 +536,9 @@ class Script(scripts.Script):
                 filename = f"{sanitize_filename(x_vals[c])}__{sanitize_filename(y_vals[r])}.png"
                 img.save(cells_dir / filename, "PNG")
                 logger.info(f"💾 XY Cell saved: {filename}")
-                try:
-                    img.close()
-                except Exception:
-                    pass
-                del img
 
         grid_idx = get_next_grid_index()
+
         for fmt in save_formats:
             ext = fmt.lower()
             out = grid
@@ -586,10 +560,12 @@ class Script(scripts.Script):
                      f"xygrid_{grid_idx}.{ext}", fmt.upper(), **save_kwargs)
             logger.info(
                 f"💾 Saved xygrid_{grid_idx}.{ext} ({out.width}×{out.height})")
-            try:
-                out.close()
-            except Exception:
-                pass
+
+            if out is not grid:
+                try:
+                    out.close()
+                except Exception:
+                    pass
 
         print(f"✅ XY Grid complete: {grid.width}×{grid.height}", flush=True)
 
