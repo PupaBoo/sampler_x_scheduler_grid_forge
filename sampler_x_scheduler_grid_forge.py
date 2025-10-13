@@ -34,16 +34,24 @@ def sanitize_filename(s):
     return re.sub(r'[<>:"/\\|?*\n\r]+', '_', s).strip()[:200]
 
 
-def get_next_grid_index():
-    output_dir.mkdir(parents=True, exist_ok=True)
+def get_next_grid_index(output_root: Path, prefix: str = "grid_") -> str:
+
+    output_root.mkdir(parents=True, exist_ok=True)
     timestamp = int(time.time() * 1000)
-    pattern = re.compile(rf"^.*_{timestamp}_(\d+)\.(?:png|webp)$")
-    existing = [f for f in output_dir.iterdir() if f.is_file()
-                and pattern.match(f.name)]
-    indices = [int(pattern.match(f.name).group(1))
-               for f in existing if pattern.match(f.name)]
+
+    pattern = re.compile(
+        rf"^{re.escape(prefix)}{timestamp}_(\d+)\.(?:png|webp)$"
+    )
+
+    existing = [
+        f for f in output_root.iterdir()
+        if f.is_file() and pattern.match(f.name)
+    ]
+
+    indices = [int(pattern.match(f.name).group(1)) for f in existing]
     next_idx = max(indices, default=0) + 1
-    return f"{timestamp}_{next_idx:03d}"
+
+    return f"{prefix}{timestamp}_{next_idx:03d}"
 
 
 def generate_or_warn(p, sampler, scheduler, font_path):
@@ -208,65 +216,81 @@ class Script(scripts.Script):
         sampler_list = [s.name for s in samplers if hasattr(s, "name")]
         scheduler_list = [s.label for s in schedulers if hasattr(s, "label")]
 
-        mode_selector = gr.Radio(["XY Grid", "Batch Grid"], value="XY Grid", label="🏁 Grid Mode")
+        mode_selector = gr.Radio(
+            ["XY Grid", "Batch Grid"], value="XY Grid", label="🏁 Grid Mode")
 
         stop_btn = gr.Button("🛑 Stop Grid Generation")
-        stop_btn.click(fn=lambda: shared.state.interrupt(), inputs=[], outputs=[])
+        stop_btn.click(fn=lambda: shared.state.interrupt(),
+                       inputs=[], outputs=[])
 
-        # XY Grid block
         xy_group = gr.Group(visible=True)
         with xy_group:
             with gr.Row():
                 with gr.Column():
-                    xy_samplers = gr.Dropdown(choices=sampler_list, multiselect=True, label="🗳️ Sampler(s)")
+                    xy_samplers = gr.Dropdown(
+                        choices=sampler_list, multiselect=True, label="🗳️ Sampler(s)")
                     select_all_samplers_btn = gr.Button("✅ Select All")
                     clear_all_samplers_btn = gr.Button("🧹 Clear All")
                 with gr.Column():
-                    xy_schedulers = gr.Dropdown(choices=scheduler_list, multiselect=True, label="📆 Scheduler(s)")
+                    xy_schedulers = gr.Dropdown(
+                        choices=scheduler_list, multiselect=True, label="📆 Scheduler(s)")
                     select_all_schedulers_btn = gr.Button("✅ Select All")
                     clear_all_schedulers_btn = gr.Button("🧹 Clear All")
-            sampler_axis = gr.Radio(["Axis X", "Axis Y"], value="Axis X", label="🧭 Place Sampler on")
+            sampler_axis = gr.Radio(
+                ["Axis X", "Axis Y"], value="Axis X", label="🧭 Place Sampler on")
 
-        # Button logic
-        select_all_samplers_btn.click(lambda: gr.update(value=sampler_list), inputs=[], outputs=[xy_samplers])
-        clear_all_samplers_btn.click(lambda: gr.update(value=[]), inputs=[], outputs=[xy_samplers])
-        select_all_schedulers_btn.click(lambda: gr.update(value=scheduler_list), inputs=[], outputs=[xy_schedulers])
-        clear_all_schedulers_btn.click(lambda: gr.update(value=[]), inputs=[], outputs=[xy_schedulers])
+        select_all_samplers_btn.click(lambda: gr.update(
+            value=sampler_list), inputs=[], outputs=[xy_samplers])
+        clear_all_samplers_btn.click(lambda: gr.update(
+            value=[]), inputs=[], outputs=[xy_samplers])
+        select_all_schedulers_btn.click(lambda: gr.update(
+            value=scheduler_list), inputs=[], outputs=[xy_schedulers])
+        clear_all_schedulers_btn.click(lambda: gr.update(
+            value=[]), inputs=[], outputs=[xy_schedulers])
 
-        # Batch Grid block
         batch_group = gr.Group(visible=False)
         with batch_group:
             with gr.Row():
-                dropdown_sampler = gr.Dropdown(choices=sampler_list, label="🗳️ Sampler(s)")
-                dropdown_scheduler = gr.Dropdown(choices=scheduler_list, label="📆 Scheduler(s)")
+                dropdown_sampler = gr.Dropdown(
+                    choices=sampler_list, label="🗳️ Sampler(s)")
+                dropdown_scheduler = gr.Dropdown(
+                    choices=scheduler_list, label="📆 Scheduler(s)")
             add_pair_btn = gr.Button("➕ Add Pair")
             clear_pairs_btn = gr.Button("🧹 Clear All Pairs")
-            pair_list = gr.Textbox(label="🔗 Added Pairs", placeholder="Sampler, Scheduler per line", lines=6)
+            pair_list = gr.Textbox(
+                label="🔗 Added Pairs", placeholder="Sampler, Scheduler per line", lines=6)
             pair_count = gr.Textbox(label="🧮 Total Pairs", interactive=False)
             pair_state = gr.State([])
 
             def parse_pairs(txt):
-                lines = [line.strip() for line in txt.splitlines() if "," in line]
+                lines = [line.strip()
+                         for line in txt.splitlines() if "," in line]
                 return list(dict.fromkeys(lines))
 
-            pair_list.change(lambda txt: (parse_pairs(txt), str(len(parse_pairs(txt)))), inputs=[pair_list], outputs=[pair_state, pair_count])
+            pair_list.change(lambda txt: (parse_pairs(txt), str(len(parse_pairs(txt)))), inputs=[
+                             pair_list], outputs=[pair_state, pair_count])
             add_pair_btn.click(lambda s, sch, cur: cur + [f"{s},{sch}"] if s and sch and f"{s},{sch}" not in cur else cur,
-                            inputs=[dropdown_sampler, dropdown_scheduler, pair_state], outputs=[pair_state])
-            pair_state.change(lambda st: ("\n".join(st), str(len(st))), inputs=[pair_state], outputs=[pair_list, pair_count])
+                               inputs=[dropdown_sampler, dropdown_scheduler, pair_state], outputs=[pair_state])
+            pair_state.change(lambda st: ("\n".join(st), str(len(st))), inputs=[
+                              pair_state], outputs=[pair_list, pair_count])
             clear_pairs_btn.click(lambda: [], [], [pair_state])
 
-        # Prompt and settings
-        pos_prompt = gr.Textbox(label="✅ Positive Prompt", placeholder="What to include", lines=3)
-        neg_prompt = gr.Textbox(label="⛔ Negative Prompt", placeholder="What to avoid", lines=2)
-        seed = gr.Textbox(label="🎲 Seed (optional)", placeholder="Leave blank for random")
+        pos_prompt = gr.Textbox(label="✅ Positive Prompt",
+                                placeholder="What to include", lines=3)
+        neg_prompt = gr.Textbox(label="⛔ Negative Prompt",
+                                placeholder="What to avoid", lines=2)
+        seed = gr.Textbox(label="🎲 Seed (optional)",
+                          placeholder="Leave blank for random")
         steps = gr.Slider(1, 100, value=35, step=1, label="🚀 Steps")
         cfg_scale = gr.Slider(1.0, 30.0, value=5, step=1, label="🎯 CFG Scale")
         width = gr.Slider(256, 2048, value=832, step=1, label="↔️ Width")
         height = gr.Slider(256, 2048, value=1216, step=1, label="↕️ Height")
         padding = gr.Slider(0, 200, value=20, step=1, label="📏 Padding (px)")
-        save_formats = gr.CheckboxGroup(choices=["WEBP", "PNG"], value=["WEBP"], label="💾 Save As")
+        save_formats = gr.CheckboxGroup(choices=["WEBP", "PNG"], value=[
+                                        "WEBP"], label="💾 Save As")
         show_labels = gr.Checkbox(label="📝 Add Labels", value=True)
-        save_cells = gr.Checkbox(label="💾 Save each cell individually", value=False)
+        save_cells = gr.Checkbox(
+            label="💾 Save each cell individually", value=False)
 
         mode_selector.change(lambda m: {
             xy_group: gr.update(visible=m == "XY Grid"),
@@ -282,7 +306,6 @@ class Script(scripts.Script):
             width, height, padding,
             save_formats, show_labels, save_cells
         ]
-
 
     def run(self, p, *args):
         (mode, xy_samplers, xy_schedulers, sampler_axis,
@@ -363,14 +386,13 @@ class Script(scripts.Script):
 
                 if save_cells:
                     filename = f"{sanitize_filename(sampler)}__{sanitize_filename(scheduler)}.png"
-                    # Save the original img (without annotation), to keep cell contents consistent
                     img.save(cells_dir / filename, "PNG")
                     logger.info(f"💾 Batch Cell Saved: {filename}")
 
             grid = create_batch_grid(result_images, width=p.width, height=p.height,
                                      padding=padding, bg_color=(255, 255, 255))
 
-            grid_idx = get_next_grid_index()
+            grid_idx = get_next_grid_index(output_dir, prefix="batch_grid_")
 
             for fmt in save_formats:
                 ext = fmt.lower()
@@ -537,7 +559,7 @@ class Script(scripts.Script):
                 img.save(cells_dir / filename, "PNG")
                 logger.info(f"💾 XY Cell saved: {filename}")
 
-        grid_idx = get_next_grid_index()
+        grid_idx = get_next_grid_index(output_dir, prefix="xy_grid_")
 
         for fmt in save_formats:
             ext = fmt.lower()
