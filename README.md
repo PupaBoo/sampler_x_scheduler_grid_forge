@@ -28,7 +28,7 @@ The script generates image grids in two modes: XY Grid and Batch Grid. XY Grid n
 > After cloning, you **must move the main `.py` file out of the cloned folder** and place it into `/scripts/`.
 
 1. Clone the repository into your Forge `/scripts/` folder:
-   git clone https://github.com/PupaBoo/Forge-Grid-Sampler-Scheduler
+   git clone https://github.com/PupaBoo/sampler_x_scheduler_grid_forge
 
 2. Navigate to the project directory:
    cd Forge-Grid-Sampler-Scheduler
@@ -103,3 +103,4 @@ Feedback, bug reports, and feature suggestions are welcome. Please report issues
   </tr>
 
 </table>
+
